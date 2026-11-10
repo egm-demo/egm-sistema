@@ -397,6 +397,68 @@ def dashboard(req: Request, date: str = ""):
     return logic.dashboard(date or None)
 
 
+@app.get("/api/owner")
+def owner_panel(req: Request, date: str = ""):
+    need(req, ["director"])
+    from . import owner
+    return owner.panel(date or None)
+
+
+@app.get("/api/owner/digest")
+def owner_digest(req: Request):
+    need(req, ["director"])
+    from . import owner
+    return {"text": owner.digest()}
+
+
+@app.post("/api/owner/digest/send")
+def owner_digest_send(req: Request):
+    need(req, ["director"])
+    from . import owner
+    return {"sent": owner.send_digest(force=True)}
+
+
+VOICE_ROLES = ["director", "dispatcher", "manager"]
+
+
+@app.post("/api/voice/parse")
+async def voice_parse(req: Request):
+    need(req, VOICE_ROLES)
+    from . import owner
+    d = await req.json()
+    return owner.parse(d.get("text") or "")
+
+
+@app.post("/api/voice/audio")
+async def voice_audio(req: Request, file: UploadFile = File(...)):
+    need(req, VOICE_ROLES)
+    from . import owner
+    os.makedirs(UPL, exist_ok=True)
+    ext = os.path.splitext(file.filename or "v.webm")[1][:6] or ".webm"
+    fn = os.path.join(UPL, f"voice_{int(time.time() * 1000)}{ext}")
+    with open(fn, "wb") as f:
+        f.write(await file.read())
+    try:
+        text = owner.transcribe(fn)
+    except Exception as ex:
+        raise HTTPException(400, f"Не удалось распознать речь: {ex}")
+    return owner.parse(text)
+
+
+@app.post("/api/voice/order")
+async def voice_order(req: Request):
+    u = need(req, VOICE_ROLES)
+    from . import owner
+    d = await req.json()
+    p = owner.parse(d.get("text") or "")
+    for k in ("client_id", "site_id", "material_id", "qty", "unit", "date"):
+        if d.get(k) not in (None, ""):
+            p[k] = d[k]
+    if not (p.get("client_id") and p.get("site_id") and p.get("material_id") and p.get("qty")):
+        raise HTTPException(400, "Не хватает данных: клиент, объект, материал, количество")
+    return {"id": owner.order_from(p, u, source=d.get("source") or "phone")}
+
+
 @app.get("/api/report/{kind}")
 def report(kind: str, req: Request, date_from: str, date_to: str):
     need(req, ["director", "accountant", "dispatcher", "manager"])
@@ -810,6 +872,11 @@ def _cron():
                         logic.notify(txt, user_id=l.get("manager_id"), role=None if l.get("manager_id") else "manager", link=f"#/leads/{l['id']}", kind="lead")
         except Exception as ex:
             print("cron error:", ex)
+        try:
+            from . import owner
+            owner.send_digest()
+        except Exception as ex:
+            print("digest error:", ex)
         time.sleep(300)
 
 

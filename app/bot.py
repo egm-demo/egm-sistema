@@ -58,10 +58,71 @@ def check_code(code):
     return m.group(1), int(m.group(2))
 
 
+def download(c, file_id, fn):
+    f = api(c, "getFile", file_id=file_id)
+    if not f.get("ok"):
+        return None
+    tok = db.setting("tg_token")
+    data = c.get(f"https://api.telegram.org/file/bot{tok}/{f['result']['file_path']}").content
+    from .main import UPL
+    os.makedirs(UPL, exist_ok=True)
+    path = os.path.join(UPL, fn)
+    open(path, "wb").write(data)
+    return path
+
+
+def voice_text(c, msg):
+    """Голосовое -> текст (локальное распознавание). None, если голосового нет или не вышло."""
+    v = msg.get("voice") or msg.get("audio")
+    if not v:
+        return None
+    from . import owner
+    path = download(c, v["file_id"], f"voice_{msg['chat']['id']}_{int(time.time())}.ogg")
+    if not path:
+        return None
+    try:
+        return owner.transcribe(path)
+    except Exception as ex:
+        print("voice error:", ex)
+        return None
+
+
+def staff_message(c, chat, rec, text, voiced):
+    from . import owner
+    if text.startswith("/svodka") or text.lower() in ("сводка", "отчёт", "отчет"):
+        if rec["role"] in ("director", "admin"):
+            api(c, "sendMessage", chat_id=chat, text=owner.digest())
+        else:
+            api(c, "sendMessage", chat_id=chat, text="Сводка доступна руководителю.")
+        return
+    if rec["role"] not in ("director", "admin", "dispatcher", "manager"):
+        api(c, "sendMessage", chat_id=chat, text="Здесь приходят уведомления системы ЕГМ.")
+        return
+    p = owner.parse(text)
+    if not (p["material_id"] or p["qty"]):
+        api(c, "sendMessage", chat_id=chat, text=("Расслышал: «" + text + "»\n" if voiced else "") +
+            "Чтобы создать заявку, скажите или напишите: клиент, объект, материал, сколько, когда.\nНапример: «Стройинвест, Подольск, щебень 20-40, 3 машины на завтра». /svodka — сводка.")
+        return
+    head = ("🎙 Расслышал: «" + text + "»\n\n" if voiced else "") + "Черновик заявки:\n" + owner.draft_text(p)
+    if p["ready"]:
+        STATE[chat] = ("draft", p)
+        api(c, "sendMessage", chat_id=chat, text=head, reply_markup=kb([[{"text": "✅ Создать заявку", "data": "vo:ok"}, {"text": "✖ Отмена", "data": "vo:no"}]]))
+    else:
+        lid = owner.lead_from(p, rec["name"] + " (черновик)")
+        api(c, "sendMessage", chat_id=chat, text=head + f"\n\nДанных не хватает — сохранил как лид, допишите в системе: #/leads/{lid}")
+
+
 def handle_message(c, msg):
     chat = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
     role, rec = who(chat)
+    voiced = False
+    if not text and (msg.get("voice") or msg.get("audio")):
+        text = voice_text(c, msg) or ""
+        voiced = True
+        if not text:
+            api(c, "sendMessage", chat_id=chat, text="Не получилось разобрать голосовое. Напишите текстом, пожалуйста.")
+            return
     if text.startswith("/start"):
         code = text[6:].strip()
         r = check_code(code)
@@ -111,6 +172,10 @@ def handle_message(c, msg):
             api(c, "sendMessage", chat_id=chat, text=f"Записал: {q:g} т. Статус: {logic.LBL['trip_status'][t['status']]}",
                 reply_markup=kb(driver_buttons(t["id"], t["status"])))
             return
+        if voiced:
+            logic.notify(f"🎙 Водитель {rec['name']}: {text[:300]}", role="dispatcher", link="#/dispatch", kind="trip")
+            api(c, "sendMessage", chat_id=chat, text=f"Передал диспетчеру: «{text}»")
+            return
         if text.startswith("/reisy") or text.lower() in ("рейсы", "мои рейсы"):
             rows = db.q("SELECT id FROM trips WHERE driver_id=? AND status NOT IN ('closed','canceled','plan') ORDER BY date, id", (rec["id"],))
             if not rows:
@@ -121,6 +186,9 @@ def handle_message(c, msg):
                     reply_markup=kb(driver_buttons(t["id"], t["status"])))
             return
         api(c, "sendMessage", chat_id=chat, text="Команды: /reisy — мои рейсы. Можно прислать фото накладной или геопозицию.")
+        return
+    if role == "staff":
+        staff_message(c, chat, rec, text, voiced)
         return
     # клиент или незнакомец -> лид
     if text:
@@ -139,6 +207,17 @@ def handle_callback(c, cb):
     role, rec = who(chat)
     data = cb.get("data") or ""
     api(c, "answerCallbackQuery", callback_query_id=cb["id"])
+    if data.startswith("vo:") and role == "staff":
+        st = STATE.pop(chat, None)
+        if data == "vo:ok" and st and st[0] == "draft":
+            from . import owner
+            oid = owner.order_from(st[1], rec, source="tg")
+            o = db.get("orders", oid)
+            api(c, "sendMessage", chat_id=chat, text=f"Заявка {o['number']} создана ✅ Сумма {o['total']:,.0f} ₽".replace(",", " ") +
+                (f"\n⚠ {o['credit_flag']}" if o.get("credit_flag") not in (None, "ок") else ""))
+        else:
+            api(c, "sendMessage", chat_id=chat, text="Отменено.")
+        return
     m = re.match(r"tr:(\d+):(\w+)", data)
     if not m or role != "driver":
         return

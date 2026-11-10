@@ -32,12 +32,12 @@ const tag = (en, v) => v ? `<span class="tag ${H(v)}">${H(lbl(en, v))}</span>` :
 const ENT = n => META.entities[n];
 
 /* ---------- каркас ---------- */
-const ICON = {dashboard: "◧", dispatch: "▦", orders: "✎", trips: "⇄", waybills: "▤", documents: "▣", clients: "☺", sites: "⌂", leads: "☎",
+const ICON = {owner: "◉", voice: "🎙", dashboard: "◧", dispatch: "▦", orders: "✎", trips: "⇄", waybills: "▤", documents: "▣", clients: "☺", sites: "⌂", leads: "☎",
   tasks: "✓", contracts: "§", client_prices: "₽", materials: "◆", zones: "◎", suppliers: "⛰", supplier_prices: "₽", warehouses: "▥",
   purchases: "⇣", stock_moves: "⇵", vehicles: "🚚", drivers: "👤", carriers: "⛟", fuel: "⛽", maintenance: "🔧", invoices: "₽",
   payments: "⇆", payroll: "₽", users: "⚙", reports: "▲", fleet: "!", stock: "▥", settings: "⚙", import: "⇪", audit: "≡", bank: "⇆"};
 const MENU_GROUPS = [
-  ["Работа", [["dashboard", "Сводка"], ["dispatch", "Диспетчерская"], ["orders"], ["trips"], ["waybills"], ["documents"]]],
+  ["Работа", [["owner", "Панель руководителя"], ["dashboard", "Сводка"], ["voice", "Заявка голосом"], ["dispatch", "Диспетчерская"], ["orders"], ["trips"], ["waybills"], ["documents"]]],
   ["Продажи", [["leads"], ["clients"], ["sites"], ["contracts"], ["client_prices"], ["tasks"]]],
   ["Финансы", [["invoices"], ["payments"], ["bank", "Выписка банка"], ["payroll"], ["reports", "Отчёты"]]],
   ["Склад и закупки", [["stock", "Остатки"], ["purchases"], ["stock_moves"], ["suppliers"], ["supplier_prices"], ["warehouses"]]],
@@ -45,7 +45,7 @@ const MENU_GROUPS = [
   ["Справочники", [["materials"], ["zones"]]],
   ["Настройки", [["settings", "Компания и боты"], ["users"], ["import", "Импорт из Excel"], ["audit", "Журнал действий"]]],
 ];
-const PAGE_ROLES = {dashboard: ["director", "dispatcher", "manager", "accountant", "mechanic"], dispatch: ["director", "dispatcher", "manager", "mechanic"],
+const PAGE_ROLES = {owner: ["director"], voice: ["director", "dispatcher", "manager"], dashboard: ["director", "dispatcher", "manager", "accountant", "mechanic"], dispatch: ["director", "dispatcher", "manager", "mechanic"],
   bank: ["director", "accountant"], reports: ["director", "accountant", "dispatcher", "manager"], stock: ["director", "accountant", "dispatcher"],
   fleet: ["director", "mechanic", "dispatcher"], settings: ["director"], import: ["director", "accountant", "manager", "dispatcher"], audit: ["director"]};
 const allowed = k => ME.role === "admin" || (PAGE_ROLES[k] ? PAGE_ROLES[k].includes(ME.role) : MENU.includes(k));
@@ -438,6 +438,78 @@ async function pageDashboard() {
     <div class="card"><h3>Требует внимания</h3>${alerts.slice(0, 8).map(a => `<div class="sm" style="margin-bottom:5px">${a.overdue ? "🔴" : "🟡"} <b>${H(a.who)}</b> — ${H(a.what)} ${D(a.date)}</div>`).join("") || `<p class="muted sm">Сроки документов в порядке</p>`}</div></div>`);
 }
 
+
+/* ---------- панель руководителя: один экран, светофор ---------- */
+async function pageOwner() {
+  const x = await api("/api/owner");
+  const s = x.sales, m = x.money, t = x.today;
+  const L = {r: "🔴", y: "🟡", g: "🟢"};
+  const big = (title, v, sub, href, cls = "") => `<a class="kpi ow ${cls}" href="${href}"><span>${title}</span><b>${v}</b><small>${sub || ""}</small></a>`;
+  const bar = pct => pct == null ? "" : `<div class="obar"><i style="width:${Math.min(100, pct)}%" class="${pct >= 100 ? "g" : pct >= 80 ? "y" : "r"}"></i></div>`;
+  const c = shell("Панель · " + D(x.date).slice(0, 5), `
+  <div class="grid g4">
+    ${big("Выручка за месяц", RUB(s.revenue), s.plan ? `${s.plan_pct}% плана ${RUB(s.plan)}` + bar(s.plan_pct) : "план не задан — Настройки", "#/reports")}
+    ${big("Прогноз на конец месяца", RUB(s.forecast), `при текущем темпе, день ${s.day} из ${s.days}` + (s.plan ? bar(s.forecast_pct) : ""), "#/reports", s.plan && s.forecast_pct < 100 ? "r" : "")}
+    ${big("Маржа", RUB(s.margin), s.margin_pct != null ? s.margin_pct + "% от выручки · " + R(s.tons) + " т" : "", "#/reports", s.margin < 0 ? "r" : "")}
+    ${big("Можно выставить сейчас", RUB(m.uninvoiced), "закрытые рейсы без счёта", "#/invoices", m.uninvoiced > 0 ? "y" : "")}
+    ${big("Долг клиентов", RUB(m.debt), `просрочено ${RUB(m.overdue)}`, "#/reports/aging", m.overdue > 0 ? "r" : "")}
+    ${big("Пришло денег за месяц", RUB(m.paid_month), "оплаты клиентов", "#/payments")}
+    ${big("Рейсы сегодня", `${t.done} / ${t.trips}`, `${R(t.tons)} т выгружено`, "#/dispatch")}
+    ${big("Машины", `${L.g}${t.green} ${L.y}${t.yellow} ${L.r}${t.red}`, "в работе / внимание / проблема", "#/vehicles", t.red ? "r" : "")}
+  </div>
+  <div class="grid g2 mt">
+    <div class="card"><h3>Требует реакции</h3>${x.problems.map(p => `<a class="oprob ${p.sev}" href="${p.href}"><b>${p.n}</b><div>${H(p.title)}${p.sub ? `<small>${H(p.sub)}</small>` : ""}</div></a>`).join("") || `<p class="muted">Проблем нет 👍</p>`}</div>
+    <div class="card"><h3>Продажи за месяц</h3><div class="kv"><span>Новых лидов</span><b>${s.leads}</b><span>Стали клиентами</span><b>${s.won}${s.conv != null ? ` (${s.conv}%)` : ""}</b><span>Заявок</span><b>${s.orders}</b></div>
+      <h3 class="mt">Менеджеры</h3>${x.managers.length ? `<table class="t"><tr><th></th><th>Менеджер</th><th>Выручка</th><th>Заявок</th><th>Лидов в работе</th><th>Не перезвонил</th></tr>${x.managers.map(u => `<tr><td>${L[u.light]}</td><td>${H(u.name)}</td><td>${RUB(u.revenue)}</td><td>${u.orders}</td><td>${u.leads}</td><td class="${u.overdue_calls ? "red" : ""}">${u.overdue_calls}</td></tr>`).join("")}</table>` : `<p class="muted sm">Нет пользователей с ролью «Менеджер продаж»</p>`}</div>
+  </div>
+  <div class="card mt"><h3>Техника — светофор на сегодня</h3><table class="t"><tr><th></th><th>Машина</th><th>Рейсов</th><th>Выполнено</th><th>Тонн</th><th>Выручка</th><th>Почему</th></tr>
+    ${x.fleet.map(v => `<tr class="cl" data-v="${v.id}"><td>${L[v.light]}</td><td><b>${H(v.plate)}</b> <span class="muted sm">${H(v.model)}</span></td><td>${v.trips}</td><td>${v.done}</td><td>${R(v.tons)}</td><td>${RUB(v.revenue)}</td><td class="sm">${H(v.why.join("; "))}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">Техника не заведена</td></tr>`}</table></div>`,
+    `<button class="btn" id="mytg">Мой Telegram</button><button class="btn" id="dg">Сводка в Telegram</button><a class="btn p" href="#/voice">🎙 Заявка голосом</a>`);
+  $$("tr[data-v]", c).forEach(r => r.onclick = () => openForm("vehicles", +r.dataset.v));
+  $("#mytg").onclick = () => showLink("u", ME.id, "себе (руководителю)");
+  $("#dg").onclick = () => run(async () => { const d = await api("/api/owner/digest"); const r = await api("/api/owner/digest/send", {body: {}});
+    modal("Утренняя сводка", `<pre class="dig">${H(d.text)}</pre><p class="sm muted">${r.sent ? `Отправлено в Telegram: ${r.sent}` : "Telegram руководителя не подключён: Пользователи → карточка → «Подключить Telegram». Сводка приходит сама каждый день утром."}</p>`, "sm"); });
+}
+
+/* ---------- заявка голосом ---------- */
+async function pageVoice() {
+  const c = shell("Заявка голосом", `<div class="grid g2"><div class="card">
+    <p>Нажмите и скажите заявку: <b>клиент, объект, материал, сколько, когда</b>.<br><span class="muted sm">Например: «Стройинвест, Подольск, щебень гранитный 20-40, три машины на завтра». Речь распознаётся на этом компьютере и никуда не отправляется.</span></p>
+    <div class="row"><button class="btn p" id="rec">🎙 Начать запись</button><span id="rs" class="muted sm"></span></div>
+    <label class="mt">Или напишите текстом</label><textarea class="i" id="vt" rows="3" placeholder="Стройинвест Подольск щебень 20-40 60 тонн завтра"></textarea>
+    <div class="row mt"><button class="btn" id="vp">Разобрать</button></div></div>
+    <div class="card" id="vd"><h3>Черновик</h3><p class="muted sm">Здесь появится заявка. Проверьте и нажмите «Создать».</p></div></div>`);
+  let mr = null, chunks = [];
+  const show = async p => {
+    const [cl, mt] = await Promise.all([api("/api/e/clients?limit=1000"), api("/api/e/materials?limit=1000")]);
+    const sites = p.client_id ? (await api(`/api/e/sites?client_id=${p.client_id}`)).rows : [];
+    const sel = (id, rows, v, f = "name") => `<select class="i" id="${id}"><option value=""></option>${rows.map(r => `<option value="${r.id}" ${r.id === v ? "selected" : ""}>${H(r[f])}</option>`).join("")}</select>`;
+    $("#vt").value = p.text || $("#vt").value;
+    $("#vd").innerHTML = `<h3>Черновик заявки</h3>${p.missing.length ? `<div class="note mb">Не понял: ${H(p.missing.join(", "))} — выберите вручную</div>` : `<div class="note g mb">Всё распознано — проверьте</div>`}
+      <div class="form"><div><label>Клиент</label>${sel("vc", cl.rows, p.client_id)}</div><div><label>Объект</label>${sel("vs", sites, p.site_id)}</div>
+      <div><label>Материал</label>${sel("vm", mt.rows, p.material_id)}</div><div><label>Количество</label><input class="i" id="vq" value="${p.qty ?? ""}"></div>
+      <div><label>Ед.</label><select class="i" id="vu">${META.enums.unit.map(([k, t]) => `<option value="${k}" ${k === p.unit ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+      <div><label>Дата</label><input class="i" type="date" id="vdt" value="${p.date || addDays(TODAY(), 1)}"></div></div>
+      ${p.phone ? `<p class="sm">Телефон в тексте: ${H(p.phone)}</p>` : ""}<div class="row mt"><button class="btn p" id="vok">Создать заявку</button></div>`;
+    $("#vc").onchange = async () => { const s = (await api(`/api/e/sites?client_id=${$("#vc").value}`)).rows; $("#vs").innerHTML = `<option value=""></option>` + s.map(r => `<option value="${r.id}">${H(r.name)}</option>`).join(""); if (s.length === 1) $("#vs").value = s[0].id; };
+    $("#vok").onclick = () => run(async () => { const r = await api("/api/voice/order", {body: {text: $("#vt").value, client_id: +$("#vc").value || null, site_id: +$("#vs").value || null,
+      material_id: +$("#vm").value || null, qty: parseFloat(String($("#vq").value).replace(",", ".")) || null, unit: $("#vu").value, date: $("#vdt").value}});
+      toast("Заявка создана"); location.hash = "#/orders/" + r.id; });
+  };
+  $("#vp").onclick = () => run(async () => show(await api("/api/voice/parse", {body: {text: $("#vt").value}})));
+  $("#rec").onclick = () => run(async () => {
+    if (mr && mr.state === "recording") { mr.stop(); return; }
+    if (!navigator.mediaDevices) throw new Error("Микрофон доступен только на этом ПК (localhost) или по https");
+    const st = await navigator.mediaDevices.getUserMedia({audio: true});
+    mr = new MediaRecorder(st); chunks = [];
+    mr.ondataavailable = e => chunks.push(e.data);
+    mr.onstop = () => run(async () => { st.getTracks().forEach(t => t.stop()); $("#rec").textContent = "🎙 Начать запись"; $("#rs").textContent = "Распознаю…";
+      const fd = new FormData(); fd.append("file", new Blob(chunks, {type: mr.mimeType}), "voice.webm");
+      try { await show(await api("/api/voice/audio", {body: fd})); } finally { $("#rs").textContent = ""; } });
+    mr.start(); $("#rec").textContent = "⏹ Закончить"; $("#rs").textContent = "Идёт запись…";
+  });
+}
+
 /* ---------- клиент (карточка 360) ---------- */
 async function pageClient(id) {
   const [c, b, orders, invs, sites, prices, contracts] = await Promise.all([api("/api/e/clients/" + id), api("/api/balance/" + id).catch(() => null),
@@ -626,10 +698,10 @@ function pageImport() {
 /* ---------- настройки ---------- */
 const SETTINGS = [["Компания", [["company_name", "Название (для документов)"], ["company_inn", "ИНН"], ["company_kpp", "КПП"], ["company_ogrn", "ОГРН"], ["company_addr", "Юридический адрес"],
   ["company_bank", "Банк, БИК, р/с, к/с"], ["company_phone", "Телефон диспетчерской"], ["company_director", "Руководитель (ФИО)"], ["company_accountant", "Главный бухгалтер (ФИО)"]]],
-  ["Расчёты", [["vat_pct", "НДС, % (0 — без НДС / УСН)"], ["fuel_price", "Цена дизеля, ₽/л"], ["fuel_norm", "Норма расхода по умолчанию, л/100 км"], ["default_capacity_t", "Тонн в одну машину по умолчанию"],
+  ["Расчёты", [["plan_month_revenue", "План выручки на месяц, ₽ (для панели руководителя)"], ["stuck_hours", "Рейс «завис», если нет движения, часов"], ["vat_pct", "НДС, % (0 — без НДС / УСН)"], ["fuel_price", "Цена дизеля, ₽/л"], ["fuel_norm", "Норма расхода по умолчанию, л/100 км"], ["default_capacity_t", "Тонн в одну машину по умолчанию"],
     ["default_distance_km", "Плечо по умолчанию, км"], ["max_trips_per_day", "Макс. рейсов на машину в день"], ["alert_days", "Предупреждать о сроках за, дней"],
     ["auto_close", "Закрывать рейс сразу после выгрузки (1/0)"], ["doc_mode_upd", "Закрывающий документ: 1 — УПД, 0 — акт"], ["notify_clients", "Уведомлять клиентов в Telegram (1/0)"]]],
-  ["Telegram-бот", [["tg_token", "Токен бота от @BotFather"], ["tg_proxy", "Прокси (если Telegram заблокирован), например socks5://127.0.0.1:10808"], ["tg_enabled", "Бот включён (1/0)"]]],
+  ["Telegram-бот", [["digest_on", "Утренняя сводка руководителю в Telegram (1/0)"], ["digest_hour", "Час отправки сводки (по умолчанию 8)"], ["tg_token", "Токен бота от @BotFather"], ["tg_proxy", "Прокси (если Telegram заблокирован), например socks5://127.0.0.1:10808"], ["tg_enabled", "Бот включён (1/0)"]]],
   ["Интеграции", [["gps_key", "Ключ для трекеров ГЛОНАСС (заголовок X-GPS-Key)"], ["edo_operator", "Оператор ЭДО (для подключения ЭТрН/ЭПЛ)"]]]];
 async function pageSettings() {
   const s = await api("/api/settings");
@@ -724,7 +796,7 @@ async function route() {
   const [p, id] = path.split("/");
   const params = Object.fromEntries(new URLSearchParams(qs || ""));
   if (!allowed(p) && !["orders", "trips", "clients", "invoices", "waybills", "leads"].includes(p)) return pageNotFound();
-  const pages = {dashboard: pageDashboard, dispatch: pageDispatch, bank: pageBank, reports: () => pageReports(id), fleet: pageFleet, stock: pageStock,
+  const pages = {owner: pageOwner, voice: pageVoice, dashboard: pageDashboard, dispatch: pageDispatch, bank: pageBank, reports: () => pageReports(id), fleet: pageFleet, stock: pageStock,
     import: pageImport, settings: pageSettings, audit: pageAudit};
   const cards = {orders: pageOrder, trips: pageTrip, clients: pageClient, invoices: pageInvoice, waybills: pageWaybill, leads: pageLead};
   await run(async () => {
@@ -740,6 +812,7 @@ async function boot() {
     const m = await api("/api/me"); ME = m.user; MENU = m.menu; META = await api("/api/meta");
   } catch (e) { return renderLogin(); }
   if (!location.hash && ME.role === "dispatcher") location.hash = "#/dispatch";
+  if (!location.hash && ["director", "admin"].includes(ME.role)) location.hash = "#/owner";
   route();
   clearInterval(window._bellT); window._bellT = setInterval(refreshBell, 60000);
 }
