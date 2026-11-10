@@ -1,0 +1,12 @@
+.venv/
+data/
+*.db
+*.db-*
+*.sqlite*
+FIRST_LOGIN.txt
+.env
+*.env
+__pycache__/
+*.pyc
+backups/
+*.log
